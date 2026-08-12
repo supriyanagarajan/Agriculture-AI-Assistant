@@ -1,9 +1,10 @@
 import os
 
+# Force CPU
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.lite as tflite
 
 from flask import Flask, render_template, request, jsonify
 from PIL import Image
@@ -66,14 +67,28 @@ client = genai.Client(
 
 
 # ============================================================
-# 6. LOAD TRAINED DISEASE MODEL
+# 6. LOAD TRAINED DISEASE MODEL - TFLITE
 # ============================================================
 
 print("Loading disease model...")
 
-model = tf.keras.models.load_model(
-    "disease_model.keras"
+interpreter = tflite.Interpreter(
+    model_path="disease_model.tflite"
 )
+
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+print("Disease TFLite model loaded successfully.")
+print("Input shape:", input_details[0]["shape"])
+print("Output shape:", output_details[0]["shape"])
+
+
+# ============================================================
+# LOAD CLASS NAMES
+# ============================================================
 
 with open("class_names.txt", "r") as file:
 
@@ -82,7 +97,6 @@ with open("class_names.txt", "r") as file:
         for line in file.readlines()
     ]
 
-print("Disease model loaded successfully.")
 print("Number of classes:", len(class_names))
 
 
@@ -150,12 +164,23 @@ def predict():
         # ----------------------------------------------------
 
         image_array = np.array(
-            image
+            image,
+            dtype=np.float32
         )
+
+
+        # ----------------------------------------------------
+        # NORMALIZE IMAGE
+        # ----------------------------------------------------
 
         image_array = (
             image_array / 255.0
         )
+
+
+        # ----------------------------------------------------
+        # ADD BATCH DIMENSION
+        # ----------------------------------------------------
 
         image_array = np.expand_dims(
             image_array,
@@ -164,14 +189,24 @@ def predict():
 
 
         # ----------------------------------------------------
-        # PREDICT
+        # TFLITE PREDICTION
         # ----------------------------------------------------
 
-        predictions = model.predict(
-            image_array,
-            verbose=0
+        interpreter.set_tensor(
+            input_details[0]["index"],
+            image_array
         )
 
+        interpreter.invoke()
+
+        predictions = interpreter.get_tensor(
+            output_details[0]["index"]
+        )
+
+
+        # ----------------------------------------------------
+        # GET PREDICTED CLASS
+        # ----------------------------------------------------
 
         predicted_index = np.argmax(
             predictions[0]
@@ -181,6 +216,11 @@ def predict():
             predicted_index
         ]
 
+
+        # ----------------------------------------------------
+        # GET CONFIDENCE
+        # ----------------------------------------------------
+
         confidence = (
             float(
                 predictions[0][
@@ -189,6 +229,10 @@ def predict():
             ) * 100
         )
 
+
+        # ----------------------------------------------------
+        # RETURN RESULT
+        # ----------------------------------------------------
 
         return jsonify({
 
@@ -632,5 +676,7 @@ if __name__ == "__main__":
     print("")
 
     app.run(
-        debug=True
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=False
     )
